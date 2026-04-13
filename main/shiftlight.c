@@ -8,7 +8,7 @@
 #define TAG "shiftlight"
 
 #define RED {.r = 0x44, .g = 0, .b = 0}
-#define GREEN {.r = 0x44, .g = 0, .b = 0}
+#define GREEN {.r = 0, .g = 0x44, .b = 0}
 #define ORANGE {.r = 0x44, .g = 0x44, .b = 0}
 #define BLUE {.r = 0, .g = 0, .b = 0x44}
 
@@ -40,7 +40,7 @@ const uint16_t RPM_THRESHOLDS_COLD[] = {
 };
 
 const colour_t RPM_COLOURS_WARM[] = {
-    GREEN, GREEN, GREEN, ORANGE, ORANGE, ORANGE, RED, RED,
+    GREEN, GREEN, GREEN, ORANGE, ORANGE, RED, RED, RED,
 };
 
 const colour_t RPM_COLOURS_COLD[] = {
@@ -54,7 +54,7 @@ void shiftlight_init() {
   led_strip_config_t led_strip_config = {
       .strip_gpio_num = 13,
       .max_leds = RPM_COUNT,
-      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_RGB,
+      .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
   };
 
   led_strip_rmt_config_t led_strip_rmt_config = {

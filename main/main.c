@@ -8,6 +8,7 @@
 void app_main(void) {
   mbe_can_init();
   shiftlight_init();
+
   // TODO: get this all working.
   // vbox_init();
   // telemetry_init();

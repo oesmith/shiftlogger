@@ -164,8 +164,8 @@ void mbe_can_update(TickType_t ts) {
 }
 
 bool mbe_can_is_data_valid() {
-  return recv_ts != zero_ts && recv_ts < send_ts &&
-         (send_ts - recv_ts) > DATA_VALIDITY_INTERVAL;
+  return recv_ts > zero_ts &&
+         (recv_ts >= send_ts || (send_ts - recv_ts) < DATA_VALIDITY_INTERVAL);
 }
 
 uint16_t mbe_can_rpm() { return rpm; }
