@@ -1,0 +1,1 @@
+void telemetry_init();

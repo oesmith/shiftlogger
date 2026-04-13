@@ -1,0 +1,1 @@
+void vbox_init();

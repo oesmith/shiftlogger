@@ -1,0 +1,14 @@
+{
+  "C_Cpp.intelliSenseEngine": "default",
+  "C_Cpp.clang_format_fallbackStyle": "Google",
+  "idf.buildPath": "${workspaceFolder}/build",
+  "idf.flashType": "UART",
+  "idf.currentSetup": "/Users/oliver/.espressif/6.0/esp-idf",
+  "clangd.path": "/Users/oliver/.espressif/tools/esp-clang/esp-20.1.1_20250829/esp-clang/bin/clangd",
+  "clangd.arguments": [
+    "--background-index",
+    "--query-driver=**",
+    "--compile-commands-dir=/Users/oliver/Projects/shiftlogger/build"
+  ],
+  "idf.port": "/dev/tty.usbserial-110",
+}
