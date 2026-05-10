@@ -7,10 +7,15 @@
 
 #define TAG "shiftlight"
 
-#define RED {.r = 0x44, .g = 0, .b = 0}
-#define GREEN {.r = 0, .g = 0x44, .b = 0}
-#define ORANGE {.r = 0x44, .g = 0x44, .b = 0}
-#define BLUE {.r = 0, .g = 0, .b = 0x44}
+// Change dependent on LED strip supply voltage.
+// 5v   = 0x44
+// 3.3v = 0x66
+#define BRI 0x44
+
+#define RED {.r = BRI, .g = 0, .b = 0}
+#define GREEN {.r = 0, .g = BRI, .b = 0}
+#define ORANGE {.r = BRI, .g = BRI, .b = 0}
+#define BLUE {.r = 0, .g = 0, .b = BRI}
 
 #define COLOUR(c) c.r, c.g, c.b
 
@@ -25,7 +30,11 @@ typedef struct {
 
 static led_strip_handle_t led_strip;
 
-#define WARM_TEMP 72.0f
+static TickType_t last_update = 0;
+
+#define LED_INTERVAL pdMS_TO_TICKS(25)
+
+#define WARM_TEMP 75.0f
 
 #define RPM_COUNT 8
 
@@ -69,6 +78,11 @@ void shiftlight_init() {
 }
 
 void shiftlight_update(TickType_t ts, uint16_t rpm, float temp_c) {
+  if ((ts - last_update) < LED_INTERVAL) {
+    return;
+  }
+  last_update = ts;
+
   for (int i = 0; i < RPM_COUNT; i++) {
     led_strip_set_pixel(led_strip, i, 0, 0, 0);
   }
@@ -99,7 +113,7 @@ void shiftlight_update(TickType_t ts, uint16_t rpm, float temp_c) {
         led_strip_set_pixel(led_strip, i, COLOUR(colours[RPM_COUNT - 1]));
       }
     }
-  } else {
+  } else if (rpm >= thresholds[0]) {
     // RPM nonzero, but below upper threshold.
     // Set LEDs according to defined thresholds / colours.
     for (uint8_t i = 0; i < RPM_COUNT; i++) {

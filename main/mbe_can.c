@@ -12,7 +12,7 @@
 #define MBE_ID_EASIMAP 0xcbe1101lu
 #define MBE_ID_ECU 0xcbe0111lu
 
-#define POLL_INTERVAL pdMS_TO_TICKS(100)
+#define POLL_INTERVAL pdMS_TO_TICKS(50)
 #define RECV_TIMEOUT pdMS_TO_TICKS(500)
 #define DATA_VALIDITY_INTERVAL pdMS_TO_TICKS(2000)
 
@@ -20,8 +20,9 @@
 // Coolant temp - ( 0x45, 0x44 )
 // Voltage - ( 0x9f, 0x9e )
 // TPS - ( 0x51, 0x50 )
-#define QUERY_MSG_A {0x10, 0xc, 0x1, 0x0, 0x0, 0x0, 0x0, 0xf8}
-#define QUERY_MSG_B {0x21, 0x7d, 0x7c, 0x45, 0x44, 0x51, 0x50}
+// Throttle site - ( 0x64 )
+#define QUERY_MSG_A {0x10, 0xb, 0x1, 0x0, 0x0, 0x0, 0x0, 0xf8}
+#define QUERY_MSG_B {0x21, 0x7d, 0x7c, 0x45, 0x44, 0x64, 0x00}
 
 static twai_node_handle_t twai_node = NULL;
 static twai_onchip_node_config_t twai_node_config = {
@@ -37,7 +38,7 @@ static QueueHandle_t rx_queue;
 
 static uint16_t rpm;
 static float temp_c;
-static float tps_v;
+static uint8_t raw_data[6] = {0};
 
 static TickType_t zero_ts;
 static TickType_t recv_ts;
@@ -142,16 +143,18 @@ esp_err_t recv_response() {
   if (ret == pdPASS) {
     rpm = 0x100 * buf[2] + buf[3];
     temp_c = (0x100 * buf[4] + buf[5]) * 160.0f / 65535.0f - 30.0f;
-    tps_v = (0x100 * buf[6] + buf[7]) * 5.0f / 65535.0f;
+    memcpy(raw_data, &buf[2], 5);
     return ESP_OK;
   } else {  // (ret == errQUEUE_EMPTY)
     return ESP_ERR_TIMEOUT;
   }
 }
 
-void mbe_can_update(TickType_t ts) {
+bool mbe_can_update(TickType_t ts) {
+  bool has_new_data = false;
   if (recv_response() == ESP_OK) {
     recv_ts = ts;
+    has_new_data = true;
   }
 
   bool should_send =
@@ -161,6 +164,8 @@ void mbe_can_update(TickType_t ts) {
     next_send_ts = ts + POLL_INTERVAL;
     recv_timeout_ts = ts + RECV_TIMEOUT;
   }
+
+  return has_new_data;
 }
 
 bool mbe_can_is_data_valid() {
@@ -172,4 +177,4 @@ uint16_t mbe_can_rpm() { return rpm; }
 
 float mbe_can_temp_c() { return temp_c; }
 
-float mbe_can_tps_v() { return tps_v; }
+uint8_t* mbe_can_raw_data() { return raw_data; }
