@@ -1,2 +1,3 @@
-idf_component_register(SRCS "telemetry.c" "mbe_can.c" "shiftlight.c" "main.c"
-                    INCLUDE_DIRS ".")
+idf_component_register(
+  SRCS "timesync.c" "storage.c" "telemetry.c" "mbe_can.c" "shiftlight.c" "power.c" "main.c"
+  INCLUDE_DIRS ".")

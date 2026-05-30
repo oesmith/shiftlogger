@@ -8,7 +8,7 @@
 #define TAG "shiftlight"
 
 // Resjacan
-#define STRIP_GPIO 2
+#define STRIP_GPIO 12
 // Homebrew
 // #define STRIP_GPIO 13
 
@@ -19,8 +19,11 @@
 
 #define RED {.r = BRI, .g = 0, .b = 0}
 #define GREEN {.r = 0, .g = BRI, .b = 0}
-#define ORANGE {.r = BRI, .g = BRI, .b = 0}
 #define BLUE {.r = 0, .g = 0, .b = BRI}
+#define CYAN {.r = 0, .g = BRI, .b = BRI}
+#define MAGENTA {.r = BRI, .g = 0, .b = BRI}
+#define YELLOW {.r = BRI, .g = BRI, .b = 0}
+#define ORANGE {.r = BRI, .g = BRI/2, .b = 0}
 
 #define COLOUR(c) c.r, c.g, c.b
 
@@ -44,6 +47,8 @@ static TickType_t last_update = 0;
 
 #define WARM_TEMP 75.0f
 
+#define STATUS_RPM_THRESHOLD 1500
+
 #define RPM_COUNT 8
 
 // Note: Sigma 125 has soft cut at 6800 RPM / hard cut at 6900 RPM.
@@ -64,8 +69,11 @@ const colour_t RPM_COLOURS_COLD[] = {
     BLUE, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE, BLUE,
 };
 
-const colour_t unresponsive_colour = RED;
-const colour_t engine_off_colour = ORANGE;
+const colour_t power_colour = YELLOW;
+const colour_t recording_colour = RED;
+const colour_t sd_card_colour = BLUE;
+const colour_t can_data_colour = MAGENTA;
+const colour_t time_sync_colour = GREEN;
 
 void shiftlight_init() {
   led_strip_config_t led_strip_config = {
@@ -85,7 +93,7 @@ void shiftlight_init() {
   led_strip_clear(led_strip);
 }
 
-void shiftlight_update(TickType_t ts, uint16_t rpm, float temp_c) {
+void shiftlight_update(TickType_t ts, uint8_t status, uint16_t rpm, float temp_c) {
   if ((ts - last_update) < LED_INTERVAL) {
     return;
   }
@@ -95,28 +103,32 @@ void shiftlight_update(TickType_t ts, uint16_t rpm, float temp_c) {
     led_strip_set_pixel(led_strip, i, 0, 0, 0);
   }
 
-  bool unresponsive = rpm == SHIFTLIGHT_NO_DATA_RPM;
   const uint16_t* thresholds =
       (temp_c >= WARM_TEMP) ? RPM_THRESHOLDS_WARM : RPM_THRESHOLDS_COLD;
   const colour_t* colours =
       (temp_c >= WARM_TEMP) ? RPM_COLOURS_WARM : RPM_COLOURS_COLD;
+
   if (ts < STARTUP_TIME) {
     for (uint8_t i = 0; i < RPM_COUNT; i++) {
       if (ts > i * STARTUP_SWEEP_SPEED) {
         led_strip_set_pixel(led_strip, i, COLOUR(RPM_COLOURS_WARM[i]));
       }
     }
-  } else if (unresponsive) {
-    // No response from ECU.
-    // Slow red flash first LED.
-    if (SLOW_FLASH(ts)) {
-      led_strip_set_pixel(led_strip, 0, COLOUR(unresponsive_colour));
+  } else if (rpm < STATUS_RPM_THRESHOLD) {
+    if (status & SHIFTLIGHT_STATUS_HAS_POWER) {
+      led_strip_set_pixel(led_strip, 7, COLOUR(power_colour));
     }
-  } else if (rpm == 0) {
-    // ECU responding but engine not running.
-    // Slow orange flash first LED.
-    if (SLOW_FLASH(ts)) {
-      led_strip_set_pixel(led_strip, 0, COLOUR(engine_off_colour));
+    if (status & SHIFTLIGHT_STATUS_HAS_SD_CARD  || SLOW_FLASH(ts)) {
+      led_strip_set_pixel(led_strip, 6, COLOUR(sd_card_colour));
+    }
+    if (status & SHIFTLIGHT_STATUS_HAS_CAN_DATA || SLOW_FLASH(ts)) {
+      led_strip_set_pixel(led_strip, 5, COLOUR(can_data_colour));
+    }
+    if (status & SHIFTLIGHT_STATUS_HAS_TIME || SLOW_FLASH(ts)) {
+      led_strip_set_pixel(led_strip, 4, COLOUR(time_sync_colour));
+    }
+    if (status & SHIFTLIGHT_STATUS_IS_RECORDING && SLOW_FLASH(ts)) {
+      led_strip_set_pixel(led_strip, 3, COLOUR(recording_colour));
     }
   } else if (rpm >= thresholds[RPM_COUNT]) {
     // RPM above upper threshold.

@@ -1,0 +1,13 @@
+#ifndef STORAGE_H
+#define STORAGE_H
+
+#include "freertos/FreeRTOS.h"
+#include <stdint.h>
+
+void storage_init(void);
+void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
+                    float tps_site, uint8_t throttle);
+bool storage_has_card(void);
+bool storage_is_recording(void);
+
+#endif // STORAGE_H
