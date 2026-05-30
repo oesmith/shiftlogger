@@ -7,10 +7,15 @@
 
 #define TAG "shiftlight"
 
+// Resjacan
+#define STRIP_GPIO 2
+// Homebrew
+// #define STRIP_GPIO 13
+
 // Change dependent on LED strip supply voltage.
 // 5v   = 0x44
 // 3.3v = 0x66
-#define BRI 0x44
+#define BRI 0x66
 
 #define RED {.r = BRI, .g = 0, .b = 0}
 #define GREEN {.r = 0, .g = BRI, .b = 0}
@@ -33,6 +38,9 @@ static led_strip_handle_t led_strip;
 static TickType_t last_update = 0;
 
 #define LED_INTERVAL pdMS_TO_TICKS(25)
+
+#define STARTUP_TIME pdMS_TO_TICKS(1000)
+#define STARTUP_SWEEP_SPEED pdMS_TO_TICKS(100)
 
 #define WARM_TEMP 75.0f
 
@@ -61,7 +69,7 @@ const colour_t engine_off_colour = ORANGE;
 
 void shiftlight_init() {
   led_strip_config_t led_strip_config = {
-      .strip_gpio_num = 13,
+      .strip_gpio_num = STRIP_GPIO,
       .max_leds = RPM_COUNT,
       .color_component_format = LED_STRIP_COLOR_COMPONENT_FMT_GRB,
   };
@@ -92,8 +100,13 @@ void shiftlight_update(TickType_t ts, uint16_t rpm, float temp_c) {
       (temp_c >= WARM_TEMP) ? RPM_THRESHOLDS_WARM : RPM_THRESHOLDS_COLD;
   const colour_t* colours =
       (temp_c >= WARM_TEMP) ? RPM_COLOURS_WARM : RPM_COLOURS_COLD;
-
-  if (unresponsive) {
+  if (ts < STARTUP_TIME) {
+    for (uint8_t i = 0; i < RPM_COUNT; i++) {
+      if (ts > i * STARTUP_SWEEP_SPEED) {
+        led_strip_set_pixel(led_strip, i, COLOUR(RPM_COLOURS_WARM[i]));
+      }
+    }
+  } else if (unresponsive) {
     // No response from ECU.
     // Slow red flash first LED.
     if (SLOW_FLASH(ts)) {

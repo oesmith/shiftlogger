@@ -16,6 +16,13 @@
 #define RECV_TIMEOUT pdMS_TO_TICKS(500)
 #define DATA_VALIDITY_INTERVAL pdMS_TO_TICKS(2000)
 
+// Resjacan
+#define CAN_RX_GPIO 13
+#define CAN_TX_GPIO 14
+// Homebrew
+// #define CAN_RX_GPIO 16
+// #define CAN_TX_GPIO 17
+
 // RPM - ( 0x7d, 0x7c )
 // Coolant temp - ( 0x45, 0x44 )
 // Voltage - ( 0x9f, 0x9e )
@@ -26,8 +33,8 @@
 
 static twai_node_handle_t twai_node = NULL;
 static twai_onchip_node_config_t twai_node_config = {
-    .io_cfg.rx = 16,
-    .io_cfg.tx = 17,
+    .io_cfg.rx = CAN_RX_GPIO,
+    .io_cfg.tx = CAN_TX_GPIO,
     .io_cfg.bus_off_indicator = GPIO_NUM_NC,
     .io_cfg.quanta_clk_out = GPIO_NUM_NC,
     .bit_timing.bitrate = 500000,
