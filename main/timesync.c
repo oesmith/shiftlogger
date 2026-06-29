@@ -30,6 +30,10 @@ void timesync_init(void) {
 }
 
 bool timesync_update(void) {
+  if (has_sync) {
+    return true;
+  }
+
   uart_event_t event;
   if (xQueueReceive(serial_queue, &event, 0)) {
     switch (event.type) {
@@ -81,10 +85,6 @@ void handle_line(void) {
 }
 
 void decode_gprmc(char *buf) {
-  if (has_sync) {
-    return;
-  }
-
   if (1) {
     ESP_LOGI(TAG, "RECV: %s", buf);
   }
@@ -158,4 +158,6 @@ void decode_gprmc(char *buf) {
 
   ESP_LOGI(TAG, "Timestamp: (%s) %s.%03d", fix, ts, msec);
   has_sync = true;
+  uart_disable_pattern_det_intr(UART_NUM_1);
+  uart_driver_delete(UART_NUM_1);
 }
