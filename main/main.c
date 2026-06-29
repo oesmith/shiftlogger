@@ -74,6 +74,6 @@ void app_main(void) {
 
     shiftlight_update(poll_ts, status, can_data.rpm, can_data.temp_c);
 
-    xTaskDelayUntil(&poll_ts, pdMS_TO_TICKS(5));
+    xTaskDelayUntil(&poll_ts, pdMS_TO_TICKS(20));
   }
 }

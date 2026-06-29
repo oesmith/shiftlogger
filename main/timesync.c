@@ -30,12 +30,8 @@ void timesync_init(void) {
 }
 
 bool timesync_update(void) {
-  if (has_sync) {
-    return true;
-  }
-
   uart_event_t event;
-  if (xQueueReceive(serial_queue, &event, 0)) {
+  while (!has_sync && xQueueReceive(serial_queue, &event, 0)) {
     switch (event.type) {
     case UART_DATA:
       break;
