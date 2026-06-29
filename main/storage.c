@@ -1,7 +1,7 @@
 #include "storage.h"
 
-#include <time.h>
 #include <sys/time.h>
+#include <time.h>
 
 #include "esp_vfs_fat.h"
 #include "sdmmc_cmd.h"
@@ -33,7 +33,6 @@ void storage_init(void) {
       .sclk_io_num = PIN_NUM_SCLK,
       .quadwp_io_num = -1,
       .quadhd_io_num = -1,
-      .max_transfer_sz = 4000,
   };
 
   ESP_ERROR_CHECK(spi_bus_initialize(host.slot, &bus_cfg, SDSPI_DEFAULT_DMA));
@@ -54,8 +53,25 @@ void storage_init(void) {
   sdmmc_card_print_info(stdout, card);
 }
 
+int millis_since_midnight(struct tm *tm, int usec) {
+  return tm->tm_hour * 60 * 60 * 1000 // Hours
+         + tm->tm_min * 60 * 1000     // Minutes
+         + tm->tm_sec * 1000          // Seconds
+         + (usec / 1000);             // Milliseconds
+}
+
+void format_millis(int ms, char *out, size_t len) {
+  snprintf(out, len, "%02d:%02d:%02d.%02d",
+           ms / (60 * 60 * 1000),   // Hours
+           (ms / (60 * 1000)) % 60, // Minutes
+           (ms / 1000) % 60,        // Seconds
+           (ms / 10) % 100);        // Centi-seconds
+}
+
 void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
-                    float tps_site, uint8_t throttle) {
+                    uint8_t throttle) {
+  TickType_t now_ts = xTaskGetTickCount();
+
   struct timeval tv;
   gettimeofday(&tv, NULL);
 
@@ -64,20 +80,22 @@ void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
 
   bool is_valid = has_power && rpm > 0;
   if (!is_recording && is_valid) {
-      // Start recording
-      char filename[64];
-      strftime(filename, sizeof(filename), MOUNT_POINT "/log-%Y%m%d-%H%M%S.csv", &tm);
+    // Start recording
+    char filename[64];
+    strftime(filename, sizeof(filename), MOUNT_POINT "/log-%Y%m%d-%H%M%S.csv",
+             &tm);
 
-      file = fopen(filename, "w");
-      if (file == NULL) {
-        ESP_LOGE(TAG, "Failed to open log file %s", filename);
-        return;
-      }
+    file = fopen(filename, "w");
+    if (file == NULL) {
+      ESP_LOGE(TAG, "Failed to open log file %s", filename);
+      return;
+    }
 
-      ESP_LOGI(TAG, "Started logging to %s", filename);
-      is_recording = true;
+    ESP_LOGI(TAG, "Started logging to %s", filename);
 
-      fprintf(file, "Time,RPM,Throttle,Water temperature\n");
+    is_recording = true;
+
+    fprintf(file, "Time,RPM,Throttle,Water temperature\n");
   }
 
   if (!is_recording) {
@@ -88,10 +106,13 @@ void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
     last_valid_ts = ts;
   }
 
+  int now_ms = millis_since_midnight(&tm, tv.tv_usec);
+  int event_ms = now_ms - (now_ts - ts);
+
   char hhmmss[16];
-  strftime(hhmmss, sizeof(hhmmss), "%H:%M:%S", &tm);
-  int ms = (int)(tv.tv_usec / 10000);
-  fprintf(file, "%s.%02d,%d,%d,%.1f\n", hhmmss, ms, rpm, throttle, temp_c);
+  format_millis(event_ms, hhmmss, sizeof(hhmmss));
+
+  fprintf(file, "%s,%d,%d,%.1f\n", hhmmss, rpm, throttle, temp_c);
 
   if ((ts - last_valid_ts) > SHUTDOWN_TIMEOUT) {
     is_recording = false;

@@ -1,21 +1,21 @@
 #include "mbe_can.h"
 
-#include <math.h>
+#include "driver/gptimer.h"
 #include "esp_log.h"
 #include "esp_system.h"
 #include "esp_twai.h"
 #include "esp_twai_onchip.h"
 #include "freertos/FreeRTOS.h"
 #include "freertos/task.h"
+#include <math.h>
 
 #define TAG "mbe_can"
 
 #define MBE_ID_EASIMAP 0xcbe1101lu
 #define MBE_ID_ECU 0xcbe0111lu
 
-#define POLL_INTERVAL pdMS_TO_TICKS(50)
-#define RECV_TIMEOUT pdMS_TO_TICKS(10)
-#define DATA_VALIDITY_INTERVAL pdMS_TO_TICKS(250)
+// APB timer is 80mhz, so each timer tick is 1us
+#define TIMER_DIVIDER (80)
 
 // Resjacan
 #define CAN_RX_GPIO 13
@@ -44,28 +44,71 @@ static twai_onchip_node_config_t twai_node_config = {
 
 static QueueHandle_t rx_queue;
 
-static uint16_t rpm;
-static float temp_c;
-static float tps_site;
-static uint8_t raw_data[6] = {0};
+static gptimer_handle_t timer;
+
+static TickType_t send_ts;
 static bool response_pending = false;
 
-static TickType_t zero_ts;
-static TickType_t recv_ts;
-static TickType_t recv_timeout_ts;
-static TickType_t send_ts;
-static TickType_t next_send_ts;
+typedef struct {
+  uint8_t buf[8];
+  TickType_t req_ts;
+  TickType_t res_ts;
+} recv_msg_t;
+
+static bool timer_cb(gptimer_handle_t t, const gptimer_alarm_event_data_t *d,
+                     void *ctx) {
+  BaseType_t xHigherPriorityTaskWoken = pdFALSE;
+
+  // Send the request frames on every timer interrupt.
+  static const uint8_t buf_a[8] = QUERY_MSG_A;
+  static const uint8_t buf_b[8] = QUERY_MSG_B;
+  static const twai_frame_t frame_a = {
+      .header.id = MBE_ID_EASIMAP,
+      .header.ide = true,
+      .buffer = (uint8_t *)buf_a,
+      .buffer_len = sizeof(buf_a),
+  };
+  static const twai_frame_t frame_b = {
+      .header.id = MBE_ID_EASIMAP,
+      .header.ide = true,
+      .buffer = (uint8_t *)buf_b,
+      .buffer_len = sizeof(buf_b),
+  };
+
+  if (response_pending) {
+    recv_msg_t recv_msg = {
+        .buf = {0},
+        .req_ts = send_ts,
+        .res_ts = 0,
+    };
+    xQueueSendToBackFromISR(rx_queue, &recv_msg, &xHigherPriorityTaskWoken);
+  }
+
+  twai_node_transmit(twai_node, &frame_a, 0);
+  twai_node_transmit(twai_node, &frame_b, 0);
+
+  send_ts = xTaskGetTickCountFromISR();
+  response_pending = true;
+
+  return xHigherPriorityTaskWoken;
+}
 
 static bool twai_rx_cb(twai_node_handle_t handle,
-                       const twai_rx_done_event_data_t* edata, void* user_ctx) {
+                       const twai_rx_done_event_data_t *edata, void *user_ctx) {
   BaseType_t xHigherPriorityTaskWoken = pdFALSE;
-  uint8_t buf[8] = {0};
+  TickType_t ts = xTaskGetTickCountFromISR();
+  recv_msg_t recv_msg = {
+      .buf = {0},
+      .req_ts = send_ts,
+      .res_ts = ts,
+  };
   twai_frame_t rx_frame = {
-      .buffer = buf,
+      .buffer = recv_msg.buf,
       .buffer_len = 8,
   };
   if (ESP_OK == twai_node_receive_from_isr(handle, &rx_frame)) {
-    xQueueSendToBackFromISR(rx_queue, &buf, &xHigherPriorityTaskWoken);
+    response_pending = false;
+    xQueueSendToBackFromISR(rx_queue, &recv_msg, &xHigherPriorityTaskWoken);
   }
   if (xHigherPriorityTaskWoken == pdTRUE) {
     portYIELD_FROM_ISR();
@@ -74,9 +117,9 @@ static bool twai_rx_cb(twai_node_handle_t handle,
 }
 
 static bool twai_state_cb(twai_node_handle_t handle,
-                          const twai_state_change_event_data_t* edata,
-                          void* user_ctx) {
-  const char* twai_state_name[] = {"error_active", "error_warning",
+                          const twai_state_change_event_data_t *edata,
+                          void *user_ctx) {
+  const char *twai_state_name[] = {"error_active", "error_warning",
                                    "error_passive", "bus_off"};
   ESP_EARLY_LOGI(TAG, "state changed: %s -> %s",
                  twai_state_name[edata->old_sta],
@@ -85,14 +128,14 @@ static bool twai_state_cb(twai_node_handle_t handle,
 }
 
 static bool twai_error_cb(twai_node_handle_t handle,
-                          const twai_error_event_data_t* edata,
-                          void* user_ctx) {
+                          const twai_error_event_data_t *edata,
+                          void *user_ctx) {
   // ESP_EARLY_LOGW(TAG, "bus error: 0x%x", edata->err_flags.val);
   return false;
 }
 
 void mbe_can_init() {
-  rx_queue = xQueueCreate(5, 8);
+  rx_queue = xQueueCreate(5, sizeof(recv_msg_t));
   if (rx_queue == NULL) {
     ESP_LOGE(TAG, "Failed to create recv queue");
     return;
@@ -103,7 +146,7 @@ void mbe_can_init() {
   twai_mask_filter_config_t mfilter_cfg = {
       .id = MBE_ID_ECU, .mask = TWAI_EXT_ID_MASK, .is_ext = true};
   ESP_ERROR_CHECK(twai_node_config_mask_filter(
-      twai_node, 0, &mfilter_cfg));  // Configure on filter 0
+      twai_node, 0, &mfilter_cfg)); // Configure on filter 0
 
   twai_event_callbacks_t user_cbs = {
       .on_rx_done = twai_rx_cb,
@@ -115,91 +158,42 @@ void mbe_can_init() {
 
   ESP_ERROR_CHECK(twai_node_enable(twai_node));
 
-  zero_ts = recv_ts = recv_timeout_ts = send_ts = next_send_ts =
-      xTaskGetTickCount();
-}
-
-esp_err_t send_query() {
-  esp_err_t ret;
-  uint8_t buf_a[8] = QUERY_MSG_A;
-  uint8_t buf_b[8] = QUERY_MSG_B;
-  twai_frame_t frame_a = {
-      .header.id = MBE_ID_EASIMAP,
-      .header.ide = true,
-      .buffer = buf_a,
-      .buffer_len = sizeof(buf_a),
+  gptimer_config_t timer_cfg = {
+      .clk_src = GPTIMER_CLK_SRC_DEFAULT,
+      .direction = GPTIMER_COUNT_UP,
+      .resolution_hz = 1000000, // 1MHz clock -- 1us resolution.
   };
-  twai_frame_t frame_b = {
-      .header.id = MBE_ID_EASIMAP,
-      .header.ide = true,
-      .buffer = buf_b,
-      .buffer_len = sizeof(buf_b),
+  ESP_ERROR_CHECK(gptimer_new_timer(&timer_cfg, &timer));
+
+  gptimer_alarm_config_t alarm_cfg = {
+      .reload_count = 0,
+      .alarm_count = 50000, // 50,000us interval -- 20Hz alert.
+      .flags.auto_reload_on_alarm = true,
   };
-  // Send both frames, then wait for transmission to complete.
-  if ((ret = twai_node_transmit(twai_node, &frame_a, 0)) != ESP_OK) {
-    ESP_LOGE(TAG, "Send failed (frame A): %s", esp_err_to_name(ret));
-  } else if ((ret = twai_node_transmit(twai_node, &frame_b, 0)) != ESP_OK) {
-    ESP_LOGE(TAG, "Send failed (frame B): %s", esp_err_to_name(ret));
-  } else if ((ret = twai_node_transmit_wait_all_done(twai_node, -1)) !=
-             ESP_OK) {
-    ESP_LOGE(TAG, "Send failed (wait): %s", esp_err_to_name(ret));
+  ESP_ERROR_CHECK(gptimer_set_alarm_action(timer, &alarm_cfg));
+
+  gptimer_event_callbacks_t cb_cfg = {
+      .on_alarm = timer_cb,
+  };
+  ESP_ERROR_CHECK(gptimer_register_event_callbacks(timer, &cb_cfg, NULL));
+
+  ESP_ERROR_CHECK(gptimer_enable(timer));
+  ESP_ERROR_CHECK(gptimer_start(timer));
+
+  send_ts = xTaskGetTickCount();
+}
+
+bool mbe_can_update(mbe_can_data_t *out) {
+  recv_msg_t msg;
+  if (xQueueReceive(rx_queue, &msg, 0 /* don't block */) != pdPASS) {
+    return false;
   }
-  return ret;
+  out->ts = msg.req_ts;
+  out->rpm = 0x100 * msg.buf[2] + msg.buf[3];
+  out->temp_c = (0x100 * msg.buf[4] + msg.buf[5]) * 160.0f / 65535.0f - 30.0f;
+  out->throttle = (uint8_t)roundf(
+      100.0f * fmaxf(fminf(msg.buf[6] * 16.0f / 255.0f, 15.0f), 0.0f) / 15.0f);
+  out->valid = (msg.res_ts != 0);
+  memcpy(out->raw_data, &msg.buf[2], 5);
+  return true;
 }
-
-esp_err_t recv_response() {
-  uint8_t buf[8] = {0};
-  BaseType_t ret = xQueueReceive(rx_queue, &buf, 0 /* don't block */);
-  if (ret == pdPASS) {
-    rpm = 0x100 * buf[2] + buf[3];
-    temp_c = (0x100 * buf[4] + buf[5]) * 160.0f / 65535.0f - 30.0f;
-    tps_site = buf[6] * 16.0f / 255.0f;
-    memcpy(raw_data, &buf[2], 5);
-    return ESP_OK;
-  } else {  // (ret == errQUEUE_EMPTY)
-    return ESP_ERR_TIMEOUT;
-  }
-}
-
-bool mbe_can_update(TickType_t ts) {
-  bool has_new_data = false;
-  if (recv_response() == ESP_OK) {
-    recv_ts = ts;
-    has_new_data = true;
-    response_pending = false;
-  } else if (ts >= recv_timeout_ts && response_pending) {
-    rpm = 0;
-    temp_c = -30.0f;
-    tps_site = 0.0f;
-    memset(raw_data, 0, sizeof(raw_data));
-    has_new_data = true;
-    response_pending = false;
-  }
-
-  bool should_send = response_pending == false && ts >= next_send_ts;
-  if (should_send && send_query() == ESP_OK) {
-    send_ts = ts;
-    next_send_ts = ts + POLL_INTERVAL;
-    recv_timeout_ts = ts + RECV_TIMEOUT;
-    response_pending = true;
-  }
-
-  return has_new_data;
-}
-
-bool mbe_can_is_data_valid() {
-  return recv_ts > zero_ts &&
-         (recv_ts >= send_ts || (send_ts - recv_ts) < DATA_VALIDITY_INTERVAL);
-}
-
-uint16_t mbe_can_rpm() { return rpm; }
-
-float mbe_can_temp_c() { return temp_c; }
-
-float mbe_can_tps_site() { return tps_site; }
-
-uint8_t mbe_can_throttle() {
-  return (uint8_t)roundf(100.0f * fmaxf(fminf(tps_site, 15.0f), 0.0f) / 15.0f);
-}
-
-uint8_t* mbe_can_raw_data() { return raw_data; }

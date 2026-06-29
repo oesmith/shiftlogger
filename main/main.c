@@ -9,6 +9,8 @@
 
 #define TAG "shiftlogger"
 
+#define DATA_VALIDITY_INTERVAL pdMS_TO_TICKS(250)
+
 void nvs_init(void) {
   /* Initialize NVS — it is used to store WiFi/BLE calibration data */
   esp_err_t ret = nvs_flash_init();
@@ -31,23 +33,24 @@ void app_main(void) {
   timesync_init();
 
   TickType_t poll_ts = xTaskGetTickCount();
+  mbe_can_data_t can_data;
   while (1) {
     bool has_time = timesync_update();
-    bool has_new_data = mbe_can_update(poll_ts);
+    bool has_new_data = mbe_can_update(&can_data);
     bool has_power = power_has_power();
     bool has_sdcard = storage_has_card();
 
     if (has_new_data) {
-      telemetry_update(mbe_can_raw_data());
+      telemetry_update(can_data.raw_data);
     }
 
     if (has_new_data && has_time && has_sdcard) {
-      storage_update(poll_ts, has_power, mbe_can_rpm(), mbe_can_temp_c(),
-                     mbe_can_tps_site(), mbe_can_throttle());
+      storage_update(can_data.ts, has_power, can_data.rpm, can_data.temp_c,
+                     can_data.throttle);
     }
 
     uint8_t status = 0;
-    if (mbe_can_is_data_valid()) {
+    if (can_data.valid && (poll_ts - can_data.ts) < DATA_VALIDITY_INTERVAL) {
       status |= SHIFTLIGHT_STATUS_HAS_CAN_DATA;
     }
 
@@ -69,9 +72,7 @@ void app_main(void) {
       status |= SHIFTLIGHT_STATUS_IS_RECORDING;
     }
 
-    uint16_t rpm = mbe_can_rpm();
-    float temp_c = mbe_can_temp_c();
-    shiftlight_update(poll_ts, status, rpm, temp_c);
+    shiftlight_update(poll_ts, status, can_data.rpm, can_data.temp_c);
 
     xTaskDelayUntil(&poll_ts, pdMS_TO_TICKS(5));
   }
