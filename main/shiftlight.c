@@ -84,7 +84,7 @@ void shiftlight_init() {
 
   led_strip_rmt_config_t led_strip_rmt_config = {
       .resolution_hz = 10 * 1000 * 1000,  // 10 MHz
-      .flags.with_dma = false,
+      .flags.with_dma = true,
   };
 
   ESP_ERROR_CHECK(led_strip_new_rmt_device(&led_strip_config,
