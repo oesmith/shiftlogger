@@ -1,5 +1,7 @@
 #include "shiftlight.h"
 
+#include <sys/time.h>
+
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -27,6 +29,7 @@
 
 #define COLOUR(c) c.r, c.g, c.b
 
+#define RECORDING_FLASH(us) ((us/100000) == 0)
 #define SLOW_FLASH(ts) (((pdTICKS_TO_MS(ts) / 300) % 2) == 0)
 #define FAST_FLASH(ts) (((pdTICKS_TO_MS(ts) / 100) % 2) == 0)
 
@@ -115,6 +118,9 @@ void shiftlight_update(TickType_t ts, uint8_t status, uint16_t rpm, float temp_c
       }
     }
   } else if (rpm < STATUS_RPM_THRESHOLD) {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+
     if (status & SHIFTLIGHT_STATUS_HAS_POWER) {
       led_strip_set_pixel(led_strip, 7, COLOUR(power_colour));
     }
@@ -127,7 +133,7 @@ void shiftlight_update(TickType_t ts, uint8_t status, uint16_t rpm, float temp_c
     if (status & SHIFTLIGHT_STATUS_HAS_TIME || SLOW_FLASH(ts)) {
       led_strip_set_pixel(led_strip, 4, COLOUR(time_sync_colour));
     }
-    if (status & SHIFTLIGHT_STATUS_IS_RECORDING && SLOW_FLASH(ts)) {
+    if (status & SHIFTLIGHT_STATUS_IS_RECORDING && RECORDING_FLASH(tv.tv_usec)) {
       led_strip_set_pixel(led_strip, 3, COLOUR(recording_colour));
     }
   } else if (rpm >= thresholds[RPM_COUNT]) {
