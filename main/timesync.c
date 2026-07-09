@@ -5,11 +5,25 @@
 
 #define TAG "timesync"
 
+#define GPS_EPOCH (315964800)
+
+static const uint8_t CFG_MSG_TEMPLATE[] = {
+  0xB5, 0x62, // Magic
+  0x06, // Class -- 0x06 CFG
+  0x01, // ID    -- 0x01 MSG
+  0x03, 0x00, // Payload length
+        0x00, // Class
+        0x00, // ID
+        0x01, // Rate
+  0x00, 0x00 // Checksum
+};
+
 static bool has_sync = false;
 static QueueHandle_t serial_queue;
 
-void handle_line(void);
-void decode_gprmc(char *buf);
+void handle_data(size_t size);
+void parse_nav_time_gps(uint8_t *data, size_t len);
+void ubx_config_msg(uint8_t class, uint8_t id, uint8_t rate);
 
 void timesync_init(void) {
   ESP_ERROR_CHECK(
@@ -25,8 +39,15 @@ void timesync_init(void) {
   ESP_ERROR_CHECK(uart_set_pin(UART_NUM_1, 48, 47, UART_PIN_NO_CHANGE,
                                UART_PIN_NO_CHANGE, UART_PIN_NO_CHANGE,
                                UART_PIN_NO_CHANGE));
-  ESP_ERROR_CHECK(
-      uart_enable_pattern_det_baud_intr(UART_NUM_1, '\n', 1, 9, 0, 0));
+
+  ubx_config_msg(0xf0, 0x00, 0); // Disable GGA
+  ubx_config_msg(0xf0, 0x01, 0); // Disable GLL
+  ubx_config_msg(0xf0, 0x02, 0); // Disable GSA
+  ubx_config_msg(0xf0, 0x03, 0); // Disable GSV
+  ubx_config_msg(0xf0, 0x04, 0); // Disable RMC
+  ubx_config_msg(0xf0, 0x05, 0); // Disable VTG
+  ubx_config_msg(0xf0, 0x05, 0); // Disable TXT
+  ubx_config_msg(0x01, 0x20, 1); // Enable TIMEGPS
 }
 
 bool timesync_update(void) {
@@ -34,6 +55,7 @@ bool timesync_update(void) {
   while (!has_sync && xQueueReceive(serial_queue, &event, 0)) {
     switch (event.type) {
     case UART_DATA:
+      handle_data(event.size);
       break;
     case UART_FIFO_OVF:
       ESP_LOGW(TAG, "FIFO overflow");
@@ -55,7 +77,7 @@ bool timesync_update(void) {
       ESP_LOGW(TAG, "UART frame error");
       break;
     case UART_PATTERN_DET:
-      handle_line();
+      // No-op;
       break;
     default:
       ESP_LOGW(TAG, "Unknown UART event: %d", event.type);
@@ -65,95 +87,82 @@ bool timesync_update(void) {
   return has_sync;
 }
 
-void handle_line(void) {
-  char buf[1024];
-  int pos = uart_pattern_pop_pos(UART_NUM_1);
-  if (pos == -1) {
-    ESP_LOGW(TAG, "Pattern too small");
-    uart_flush_input(UART_NUM_1);
-    return;
-  }
-  int read_len = uart_read_bytes(UART_NUM_1, buf, pos + 1, 0);
-  buf[read_len] = 0;
-  if (strnstr(buf, "$GPRMC", read_len) == buf) {
-    decode_gprmc(buf);
+void handle_data(size_t size) {
+  uint8_t buf[64];
+  while (!has_sync && size > 0) {
+    size_t n = size > sizeof(buf) ? sizeof(buf) : size;
+    size -= n;
+    uart_read_bytes(UART_NUM_1, buf, n, 0);
+    parse_nav_time_gps(buf, n);
   }
 }
 
-void decode_gprmc(char *buf) {
-  if (1) {
-    ESP_LOGI(TAG, "RECV: %s", buf);
-  }
-
-  char *time = NULL;
-  char *fix = NULL;
-  char *date = NULL;
-
-  char *tok;
-  for (int i = 1; buf != NULL; i++) {
-    tok = strsep(&buf, ",");
-    if (i == 2) {
-      time = tok;
-    } else if (i == 3) {
-      fix = tok;
-    } else if (i == 10) {
-      date = tok;
-    }
-  }
-
-  if (time == NULL || fix == NULL || date == NULL) {
+void parse_nav_time_gps(uint8_t *data, size_t len) {
+  if (len != 24 ||
+      data[0] != 0xb5 ||
+      data[1] != 0x62 ||
+      data[2] != 0x01 ||
+      data[3] != 0x20 ||
+      data[4] != 0x10 ||
+      data[5] != 0x00) {
     return;
   }
 
-  size_t time_len = strlen(time);
-  size_t fix_len = strlen(fix);
-  size_t date_len = strlen(date);
-  if (time_len == 0 || fix_len == 0 || date_len == 0) {
-    return;
+  uint32_t gps_tow =
+    ((uint32_t)data[6])
+    + (((uint32_t)data[7]) << 8)
+    + (((uint32_t)data[8]) << 16)
+    + (((uint32_t)data[9]) << 24);
+  uint16_t gps_week =
+    ((uint16_t)data[14])
+    + (((uint16_t)data[15]) << 8);
+  uint8_t leap_seconds = data[16];
+  uint8_t flags = data[17];
+
+  ESP_LOGI(TAG, "Week %d, Time of week %dms, %d leap seconds, flags %d", gps_week, gps_tow, leap_seconds, flags);
+
+  if ((flags & 0x4) == 0) {
+    // If we don't have UTC leap seconds from GPS yet, then assume we're in
+    // 2026 where the offset is 18 seconds.
+    leap_seconds = 18;
   }
 
-  if (time_len != 9) {
-    ESP_LOGW(TAG, "Invalid time string: %s", time);
-    return;
+  time_t ts =
+    GPS_EPOCH
+    + 7 * 86400 * (time_t)gps_week
+    + (time_t)gps_tow / 1000
+    - (time_t)leap_seconds;
+
+  if ((flags & 0x3) == 0x3) {
+    struct timeval tv = {
+      .tv_sec = ts,
+      .tv_usec = 0
+    };
+    settimeofday(&tv, NULL);
+
+    has_sync = true;
+    uart_driver_delete(UART_NUM_1);
   }
-  if (fix_len != 1) {
-    ESP_LOGW(TAG, "Invalid fix string: %s", fix);
-    return;
+
+  struct tm tm;
+  gmtime_r(&ts, &tm);
+  char sz[64] = {0};
+  strftime(sz, sizeof(sz), "%Y-%m-%d %H:%M:%S", &tm);
+  ESP_LOGI(TAG, "Date %s", sz);
+}
+
+void ubx_config_msg(uint8_t class, uint8_t id, uint8_t rate) {
+  uint8_t req[sizeof(CFG_MSG_TEMPLATE)] = {0};
+  memcpy(req, CFG_MSG_TEMPLATE, sizeof(CFG_MSG_TEMPLATE));
+  req[6] = class;
+  req[7] = id;
+  req[8] = rate;
+  uint8_t a = 0, b = 0;
+  for (int i = 2; i < sizeof(req)-2; i++) {
+    a += req[i];
+    b += a;
   }
-  if (date_len != 6) {
-    ESP_LOGW(TAG, "Invalid date string: %s", date);
-    return;
-  }
-
-  if (fix[0] != 'A') {
-    return;
-  }
-
-  struct tm tm = {0};
-  int msec = 0;
-
-  // Parse time components.
-  tm.tm_hour = (int)(time[0] - '0') * 10 + (time[1] - '0');
-  tm.tm_min = (int)(time[2] - '0') * 10 + (time[3] - '0');
-  tm.tm_sec = (int)(time[4] - '0') * 10 + (time[5] - '0');
-  msec = (int)(time[7] - '0') * 100 + (int)(time[8] - '0') * 10;
-
-  // Parse date components.
-  tm.tm_year = 100 + (int)(date[4] - '0') * 10 + (date[5] - '0');
-  tm.tm_mon = (int)(date[2] - '0') * 10 + (date[3] - '0') - 1;
-  tm.tm_mday = (int)(date[0] - '0') * 10 + (date[1] - '0');
-
-  char ts[64];
-  strftime(ts, sizeof(ts), "%Y-%m-%d %H:%M:%S", &tm);
-
-  struct timeval tv = {
-    .tv_sec = timegm(&tm),
-    .tv_usec = msec * 1000,
-  };
-  settimeofday(&tv, NULL);
-
-  ESP_LOGI(TAG, "Timestamp: (%s) %s.%03d", fix, ts, msec);
-  has_sync = true;
-  uart_disable_pattern_det_intr(UART_NUM_1);
-  uart_driver_delete(UART_NUM_1);
+  req[sizeof(req) - 2] = a;
+  req[sizeof(req) - 1] = b;
+  uart_write_bytes(UART_NUM_1, req, sizeof(req));
 }
