@@ -53,13 +53,6 @@ void storage_init(void) {
   sdmmc_card_print_info(stdout, card);
 }
 
-int millis_since_midnight(struct tm *tm, int usec) {
-  return tm->tm_hour * 60 * 60 * 1000 // Hours
-         + tm->tm_min * 60 * 1000     // Minutes
-         + tm->tm_sec * 1000          // Seconds
-         + (usec / 1000);             // Milliseconds
-}
-
 void format_millis(int ms, char *out, size_t len) {
   snprintf(out, len, "%02d:%02d:%02d.%02d",
            ms / (60 * 60 * 1000),   // Hours
@@ -69,17 +62,13 @@ void format_millis(int ms, char *out, size_t len) {
 }
 
 void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
-                    uint8_t throttle) {
-  TickType_t now_ts = xTaskGetTickCount();
-
-  struct timeval tv;
-  gettimeofday(&tv, NULL);
-
-  struct tm tm;
-  gmtime_r(&tv.tv_sec, &tm);
-
+                    uint8_t throttle, uint32_t event_ms) {
   bool is_valid = has_power && rpm > 0;
   if (!is_recording && is_valid) {
+    time_t ti = time(NULL);
+    struct tm tm;
+    gmtime_r(&ti, &tm);
+
     // Start recording
     char filename[64];
     strftime(filename, sizeof(filename), MOUNT_POINT "/log-%Y%m%d-%H%M%S.csv",
@@ -95,7 +84,7 @@ void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
 
     is_recording = true;
 
-    fprintf(file, "Time,RPM,Throttle,Water temperature\n");
+    fprintf(file, "time,rpm,throttle,engine_temp\n");
   }
 
   if (!is_recording) {
@@ -105,9 +94,6 @@ void storage_update(TickType_t ts, bool has_power, uint16_t rpm, float temp_c,
   if (is_valid) {
     last_valid_ts = ts;
   }
-
-  int now_ms = millis_since_midnight(&tm, tv.tv_usec);
-  int event_ms = now_ms - (now_ts - ts);
 
   char hhmmss[16];
   format_millis(event_ms, hhmmss, sizeof(hhmmss));

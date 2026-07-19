@@ -24,6 +24,7 @@ static QueueHandle_t serial_queue;
 void handle_data(size_t size);
 void parse_nav_time_gps(uint8_t *data, size_t len);
 void ubx_config_msg(uint8_t class, uint8_t id, uint8_t rate);
+uint32_t millis_since_midnight(struct tm* tm, int usec);
 
 void timesync_init(void) {
   ESP_ERROR_CHECK(
@@ -165,4 +166,23 @@ void ubx_config_msg(uint8_t class, uint8_t id, uint8_t rate) {
   req[sizeof(req) - 2] = a;
   req[sizeof(req) - 1] = b;
   uart_write_bytes(UART_NUM_1, req, sizeof(req));
+}
+
+uint32_t millis_since_midnight(struct tm *tm, int usec) {
+  return tm->tm_hour * 60 * 60 * 1000 // Hours
+         + tm->tm_min * 60 * 1000     // Minutes
+         + tm->tm_sec * 1000          // Seconds
+         + (usec / 1000);             // Milliseconds
+}
+
+uint32_t timesync_millis(TickType_t ts) {
+  TickType_t now_ts = xTaskGetTickCount();
+
+  struct timeval tv;
+  gettimeofday(&tv, NULL);
+
+  struct tm tm;
+  gmtime_r(&tv.tv_sec, &tm);
+
+  return millis_since_midnight(&tm, tv.tv_usec) - (now_ts - ts);
 }

@@ -40,13 +40,16 @@ void app_main(void) {
     bool has_power = power_has_power();
     bool has_sdcard = storage_has_card();
 
+    uint32_t event_ms =
+        (has_new_data && has_time) ? timesync_millis(can_data.ts) : 0;
+
     if (has_new_data) {
-      telemetry_update(can_data.raw_data);
+      telemetry_update(event_ms, can_data.raw_data);
     }
 
     if (has_new_data && has_time && has_sdcard) {
       storage_update(can_data.ts, has_power, can_data.rpm, can_data.temp_c,
-                     can_data.throttle);
+                     can_data.throttle, event_ms);
     }
 
     uint8_t status = 0;

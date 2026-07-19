@@ -16,7 +16,7 @@
 static ble_uuid128_t svc_uuid;
 static ble_uuid128_t chr_uuid;
 
-static uint8_t chr_val[5] = {0, 1, 2, 3, 4};
+static uint8_t chr_val[9] = {0, 1, 2, 3, 0, 1, 2, 3, 4};
 static uint16_t chr_val_handle;
 
 static uint16_t chr_conn_handle = BLE_HS_CONN_HANDLE_NONE;
@@ -243,13 +243,17 @@ void telemetry_init() {
   }
 }
 
-void telemetry_update(uint8_t* data) {
+void telemetry_update(uint32_t event_ms, uint8_t* data) {
   if (!notify_status) {
     return;
   }
 
+  uint8_t buf[sizeof(chr_val)] = {0};
+  *((uint32_t*)buf) = __builtin_bswap32(event_ms);
+  memcpy(&buf[4], data, sizeof(chr_val) - sizeof(event_ms));
+
   struct os_mbuf *om;
-  om = ble_hs_mbuf_from_flat(data, sizeof(chr_val));
+  om = ble_hs_mbuf_from_flat(buf, sizeof(chr_val));
   if (ble_gattc_notify_custom(chr_conn_handle, chr_val_handle, om) != 0) {
     ESP_LOGW(TAG, "Notification failed.");
   }
