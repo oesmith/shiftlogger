@@ -134,6 +134,9 @@ void shiftlight_update(TickType_t ts, uint8_t status, uint16_t rpm, float temp_c
       led_strip_set_pixel(led_strip, 4, COLOUR(time_sync_colour));
     }
     if (status & SHIFTLIGHT_STATUS_IS_RECORDING && RECORDING_FLASH(tv.tv_usec)) {
+      led_strip_set_pixel(led_strip, 0, COLOUR(recording_colour));
+      led_strip_set_pixel(led_strip, 1, COLOUR(recording_colour));
+      led_strip_set_pixel(led_strip, 2, COLOUR(recording_colour));
       led_strip_set_pixel(led_strip, 3, COLOUR(recording_colour));
     }
   } else if (rpm >= thresholds[RPM_COUNT]) {
