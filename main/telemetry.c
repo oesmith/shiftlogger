@@ -1,3 +1,5 @@
+#include <time.h>
+#include <sys/time.h>
 #include "esp_log.h"
 #include "host/ble_att.h"
 #include "host/ble_gap.h"
@@ -43,10 +45,13 @@ static uint8_t esp_uri[] = {0x17 /* HTTPS */,
                             'o',
                             'm'};
 
+static bool has_time = false;
+
 void ble_store_config_init(void);
 
 static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
                       struct ble_gatt_access_ctxt *ctxt, void *arg);
+
 void start_advertising(void);
 
 static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
@@ -58,7 +63,7 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
                 {
                     .uuid = &chr_uuid.u,
                     .access_cb = chr_access,
-                    .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                    .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_WRITE,
                     .val_handle = &chr_val_handle,
                 },
                 {
@@ -72,15 +77,36 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
 
 static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
                       struct ble_gatt_access_ctxt *ctxt, void *arg) {
-  if (ctxt->op != BLE_GATT_ACCESS_OP_READ_CHR ||
-      attr_handle != chr_val_handle) {
-    // only read supported.
-    return BLE_ATT_ERR_UNLIKELY;
+  if (attr_handle != chr_val_handle) {
+    return BLE_ATT_ERR_INVALID_HANDLE;
   }
-
-  return os_mbuf_append(ctxt->om, chr_val, sizeof(chr_val)) == 0
-             ? 0
-             : BLE_ATT_ERR_INSUFFICIENT_RES;
+  if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
+    return os_mbuf_append(ctxt->om, chr_val, sizeof(chr_val)) == 0
+      ? 0
+      : BLE_ATT_ERR_INSUFFICIENT_RES;
+  } else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
+    if (OS_MBUF_PKTLEN(ctxt->om) != 8) {
+      return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
+    }
+    if (!has_time) {
+      has_time = true;
+      uint64_t millis = 0;
+      uint16_t unused = 0;
+      int ret = ble_hs_mbuf_to_flat(ctxt->om, &millis, 8, &unused);
+      if (ret != 0) {
+        return BLE_ATT_ERR_UNLIKELY;
+      }
+      struct timeval tv = {
+        .tv_sec = millis / 1000,
+        .tv_usec = (millis % 1000) * 1000,
+      };
+      settimeofday(&tv, NULL);
+      MODLOG_DFLT(INFO, "Time received %lld (%llx)", millis, millis);
+    }
+    return 0;
+  }
+  // Unsupported operation.
+  return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
 }
 
 void reset_sub(void) {

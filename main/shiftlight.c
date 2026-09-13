@@ -10,7 +10,7 @@
 #define TAG "shiftlight"
 
 // Resjacan
-#define STRIP_GPIO 12
+#define STRIP_GPIO 2
 // Homebrew
 // #define STRIP_GPIO 13
 
