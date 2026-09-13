@@ -7,6 +7,9 @@
 
 #define GPS_EPOCH (315964800)
 
+// Wait at least 15s after startup for GPS sync.
+#define MIN_SYNC_TICKS (pdMS_TO_TICKS(15000))
+
 static const uint8_t CFG_MSG_TEMPLATE[] = {
   0xB5, 0x62, // Magic
   0x06, // Class -- 0x06 CFG
@@ -134,7 +137,9 @@ void parse_nav_time_gps(uint8_t *data, size_t len) {
     + (time_t)gps_tow / 1000
     - (time_t)leap_seconds;
 
-  if ((flags & 0x3) == 0x3) {
+  TickType_t ticks = xTaskGetTickCount();
+
+  if (ticks >= MIN_SYNC_TICKS && (flags & 0x3) == 0x3) {
     struct timeval tv = {
       .tv_sec = ts,
       .tv_usec = 0
