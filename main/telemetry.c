@@ -1,5 +1,3 @@
-#include <time.h>
-#include <sys/time.h>
 #include "esp_log.h"
 #include "host/ble_att.h"
 #include "host/ble_gap.h"
@@ -7,23 +5,31 @@
 #include "host/ble_hs.h"
 #include "host/ble_uuid.h"
 #include "host/util/util.h"
-//#include "nimble/ble.h"
+#include <sys/time.h>
+#include <time.h>
+// #include "nimble/ble.h"
 #include "nimble/nimble_port.h"
-//#include "nimble/nimble_port_freertos.h"
+// #include "nimble/nimble_port_freertos.h"
 #include "services/gap/ble_svc_gap.h"
 #include "services/gatt/ble_svc_gatt.h"
 
 #define TAG "telemetry"
 
-static ble_uuid128_t svc_uuid;
-static ble_uuid128_t chr_uuid;
+#define SVC_UUID 0x1ff8
+#define MAIN_CHR_UUID 0x1
+#define FILTER_CHR_UUID 0x2
 
-static uint8_t chr_val[9] = {0, 1, 2, 3, 0, 1, 2, 3, 4};
-static uint16_t chr_val_handle;
+static ble_uuid16_t svc_uuid = BLE_UUID16_INIT(SVC_UUID);
 
-static uint16_t chr_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+static uint8_t main_chr_val[9] = {1, 0, 0, 0, 0, 0, 0, 0, 0};
+static uint16_t main_chr_val_handle;
+
+static uint16_t filter_chr_val_handle;
+
+static uint16_t main_chr_conn_handle = BLE_HS_CONN_HANDLE_NONE;
 static bool conn_handle_inited = false;
 static bool notify_status = false;
+static uint16_t notify_interval = 0;
 
 static uint8_t own_addr_type;
 static uint8_t own_addr[6] = {0};
@@ -45,26 +51,32 @@ static uint8_t esp_uri[] = {0x17 /* HTTPS */,
                             'o',
                             'm'};
 
-static bool has_time = false;
-
 void ble_store_config_init(void);
 
-static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
-                      struct ble_gatt_access_ctxt *ctxt, void *arg);
+static int main_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                           struct ble_gatt_access_ctxt *ctxt, void *arg);
+static int filter_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                             struct ble_gatt_access_ctxt *ctxt, void *arg);
 
 void start_advertising(void);
 
 static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
     {
         .type = BLE_GATT_SVC_TYPE_PRIMARY,
-        .uuid = &svc_uuid.u,
+        .uuid = BLE_UUID16_DECLARE(SVC_UUID),
         .characteristics =
             (struct ble_gatt_chr_def[]){
                 {
-                    .uuid = &chr_uuid.u,
-                    .access_cb = chr_access,
-                    .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY | BLE_GATT_CHR_F_WRITE,
-                    .val_handle = &chr_val_handle,
+                    .uuid = BLE_UUID16_DECLARE(MAIN_CHR_UUID),
+                    .access_cb = main_chr_access,
+                    .flags = BLE_GATT_CHR_F_READ | BLE_GATT_CHR_F_NOTIFY,
+                    .val_handle = &main_chr_val_handle,
+                },
+                {
+                    .uuid = BLE_UUID16_DECLARE(FILTER_CHR_UUID),
+                    .access_cb = filter_chr_access,
+                    .flags = BLE_GATT_CHR_F_WRITE,
+                    .val_handle = &filter_chr_val_handle,
                 },
                 {
                     0, // END
@@ -75,44 +87,60 @@ static const struct ble_gatt_svc_def gatt_svr_svcs[] = {
     },
 };
 
-static int chr_access(uint16_t conn_handle, uint16_t attr_handle,
-                      struct ble_gatt_access_ctxt *ctxt, void *arg) {
-  if (attr_handle != chr_val_handle) {
+static int main_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                           struct ble_gatt_access_ctxt *ctxt, void *arg) {
+  if (attr_handle != main_chr_val_handle) {
     return BLE_ATT_ERR_INVALID_HANDLE;
   }
   if (ctxt->op == BLE_GATT_ACCESS_OP_READ_CHR) {
-    return os_mbuf_append(ctxt->om, chr_val, sizeof(chr_val)) == 0
-      ? 0
-      : BLE_ATT_ERR_INSUFFICIENT_RES;
-  } else if (ctxt->op == BLE_GATT_ACCESS_OP_WRITE_CHR) {
-    if (OS_MBUF_PKTLEN(ctxt->om) != 8) {
-      return BLE_ATT_ERR_INVALID_ATTR_VALUE_LEN;
-    }
-    if (!has_time) {
-      has_time = true;
-      uint64_t millis = 0;
-      uint16_t unused = 0;
-      int ret = ble_hs_mbuf_to_flat(ctxt->om, &millis, 8, &unused);
-      if (ret != 0) {
-        return BLE_ATT_ERR_UNLIKELY;
-      }
-      struct timeval tv = {
-        .tv_sec = millis / 1000,
-        .tv_usec = (millis % 1000) * 1000,
-      };
-      settimeofday(&tv, NULL);
-      MODLOG_DFLT(INFO, "Time received %lld (%llx)", millis, millis);
-    }
-    return 0;
+    return os_mbuf_append(ctxt->om, main_chr_val, sizeof(main_chr_val)) == 0
+               ? 0
+               : BLE_ATT_ERR_INSUFFICIENT_RES;
   }
   // Unsupported operation.
   return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
 }
 
+static int filter_chr_access(uint16_t conn_handle, uint16_t attr_handle,
+                             struct ble_gatt_access_ctxt *ctxt, void *arg) {
+  if (attr_handle != filter_chr_val_handle) {
+    return BLE_ATT_ERR_INVALID_HANDLE;
+  }
+  if (ctxt->op != BLE_GATT_ACCESS_OP_WRITE_CHR) {
+    // Unsupported operation.
+    return BLE_ATT_ERR_REQ_NOT_SUPPORTED;
+  }
+  uint8_t buf[8] = {0};
+  uint16_t actual_size = 0;
+  int ret = ble_hs_mbuf_to_flat(ctxt->om, &buf, 8, &actual_size);
+  if (ret != 0) {
+    return BLE_ATT_ERR_UNLIKELY;
+  }
+  switch (buf[0]) {
+  case 0: // DENY ALL
+    notify_interval = 0;
+    ESP_LOGI(TAG, "DENY ALL");
+    break;
+  case 1: // ALLOW ALL
+    notify_interval = __builtin_bswap16(*(uint16_t *)(&buf[1]));
+    ESP_LOGI(TAG, "ALLOW ALL %u", notify_interval);
+    break;
+  case 2: // ALLOW
+    notify_interval = __builtin_bswap16(*(uint16_t *)(&buf[1]));
+    uint32_t pid = __builtin_bswap32(*(uint32_t *)(&buf[3]));
+    ESP_LOGI(TAG, "ALLOW %u %u", notify_interval, pid);
+    break;
+  default:
+    break;
+  }
+  return 0;
+}
+
 void reset_sub(void) {
-  chr_conn_handle = BLE_HS_CONN_HANDLE_NONE;
+  main_chr_conn_handle = BLE_HS_CONN_HANDLE_NONE;
   conn_handle_inited = false;
   notify_status = false;
+  notify_interval = 0;
 }
 
 int gap_event_handler(struct ble_gap_event *evt, void *arg) {
@@ -127,8 +155,8 @@ int gap_event_handler(struct ble_gap_event *evt, void *arg) {
                desc.conn_latency, desc.supervision_timeout);
     }
   } else if (evt->type == BLE_GAP_EVENT_SUBSCRIBE &&
-             evt->subscribe.attr_handle == chr_val_handle) {
-    chr_conn_handle = evt->subscribe.conn_handle;
+             evt->subscribe.attr_handle == main_chr_val_handle) {
+    main_chr_conn_handle = evt->subscribe.conn_handle;
     conn_handle_inited = true;
     notify_status = evt->subscribe.cur_notify;
   }
@@ -136,17 +164,16 @@ int gap_event_handler(struct ble_gap_event *evt, void *arg) {
 }
 
 void start_advertising(void) {
-  //const char *name;
   struct ble_hs_adv_fields adv_fields = {0};
   struct ble_hs_adv_fields rsp_fields = {0};
   struct ble_gap_adv_params adv_params = {0};
 
   adv_fields.flags = BLE_HS_ADV_F_DISC_GEN | BLE_HS_ADV_F_BREDR_UNSUP;
 
-  // name = ble_svc_gap_device_name();
-  // adv_fields.name = (uint8_t *)name;
-  // adv_fields.name_len = strlen(name);
-  // adv_fields.name_is_complete = 1;
+  const char *name = ble_svc_gap_device_name();
+  adv_fields.name = (uint8_t *)name;
+  adv_fields.name_len = strlen(name);
+  adv_fields.name_is_complete = 1;
 
   adv_fields.tx_pwr_lvl = BLE_HS_ADV_TX_PWR_LVL_AUTO;
   adv_fields.tx_pwr_lvl_is_present = 1;
@@ -157,9 +184,9 @@ void start_advertising(void) {
   adv_fields.le_role = 0x00; // BLE_GAP_LE_ROLE_PERIPHERAL
   adv_fields.le_role_is_present = 1;
 
-  adv_fields.uuids128 = &svc_uuid;
-  adv_fields.num_uuids128 = 1;
-  adv_fields.uuids128_is_complete = 1;
+  adv_fields.uuids16 = &svc_uuid;
+  adv_fields.num_uuids16 = 1;
+  adv_fields.uuids16_is_complete = 1;
 
   if (ble_gap_adv_set_fields(&adv_fields) != 0) {
     ESP_LOGE(TAG, "Failed to set advertising data.");
@@ -229,12 +256,6 @@ static void nimble_host_task(void *param) {
 }
 
 void telemetry_init() {
-  ble_uuid_any_t uuid;
-  ble_uuid_from_str(&uuid, "4155b086-4973-4e88-8364-e381ba328355");
-  svc_uuid = uuid.u128;
-  ble_uuid_from_str(&uuid, "2a4ca9c6-8d05-41e8-b241-c238ee79a2bf");
-  chr_uuid = uuid.u128;
-
   esp_err_t ret = nimble_port_init();
   if (ret != ESP_OK) {
     ESP_LOGE(TAG, "Failed to init nimble %d ", ret);
@@ -269,18 +290,23 @@ void telemetry_init() {
   }
 }
 
-void telemetry_update(uint32_t event_ms, uint8_t* data) {
+void telemetry_update(uint8_t *data) {
+  memcpy(&main_chr_val[4], data, sizeof(main_chr_val) - 4);
+
   if (!notify_status) {
     return;
   }
 
-  uint8_t buf[sizeof(chr_val)] = {0};
-  *((uint32_t*)buf) = __builtin_bswap32(event_ms);
-  memcpy(&buf[4], data, sizeof(chr_val) - sizeof(event_ms));
+  // TODO update interval?
 
-  struct os_mbuf *om;
-  om = ble_hs_mbuf_from_flat(buf, sizeof(chr_val));
-  if (ble_gattc_notify_custom(chr_conn_handle, chr_val_handle, om) != 0) {
+  struct os_mbuf *om =
+      ble_hs_mbuf_from_flat(main_chr_val, sizeof(main_chr_val));
+  if (ble_gattc_notify_custom(main_chr_conn_handle, main_chr_val_handle, om) !=
+      0) {
     ESP_LOGW(TAG, "Notification failed.");
   }
+}
+
+bool telemetry_active() {
+  return notify_status;
 }

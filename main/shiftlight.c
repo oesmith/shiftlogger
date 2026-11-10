@@ -1,7 +1,5 @@
 #include "shiftlight.h"
 
-#include <sys/time.h>
-
 #include "esp_log.h"
 #include "esp_system.h"
 #include "freertos/FreeRTOS.h"
@@ -29,7 +27,6 @@
 
 #define COLOUR(c) c.r, c.g, c.b
 
-#define RECORDING_FLASH(us) ((us/100000) == 0)
 #define SLOW_FLASH(ts) (((pdTICKS_TO_MS(ts) / 300) % 2) == 0)
 #define FAST_FLASH(ts) (((pdTICKS_TO_MS(ts) / 100) % 2) == 0)
 
@@ -73,10 +70,8 @@ const colour_t RPM_COLOURS_COLD[] = {
 };
 
 const colour_t power_colour = YELLOW;
-const colour_t recording_colour = RED;
-const colour_t sd_card_colour = BLUE;
+const colour_t client_colour = RED;
 const colour_t can_data_colour = MAGENTA;
-const colour_t time_sync_colour = GREEN;
 
 void shiftlight_init() {
   led_strip_config_t led_strip_config = {
@@ -118,26 +113,14 @@ void shiftlight_update(TickType_t ts, uint8_t status, uint16_t rpm, float temp_c
       }
     }
   } else if (rpm < STATUS_RPM_THRESHOLD) {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-
     if (status & SHIFTLIGHT_STATUS_HAS_POWER) {
       led_strip_set_pixel(led_strip, 7, COLOUR(power_colour));
     }
-    if (status & SHIFTLIGHT_STATUS_HAS_SD_CARD  || SLOW_FLASH(ts)) {
-      led_strip_set_pixel(led_strip, 6, COLOUR(sd_card_colour));
-    }
     if (status & SHIFTLIGHT_STATUS_HAS_CAN_DATA || SLOW_FLASH(ts)) {
-      led_strip_set_pixel(led_strip, 5, COLOUR(can_data_colour));
+      led_strip_set_pixel(led_strip, 6, COLOUR(can_data_colour));
     }
-    if (status & SHIFTLIGHT_STATUS_HAS_TIME || SLOW_FLASH(ts)) {
-      led_strip_set_pixel(led_strip, 4, COLOUR(time_sync_colour));
-    }
-    if (status & SHIFTLIGHT_STATUS_IS_RECORDING && RECORDING_FLASH(tv.tv_usec)) {
-      led_strip_set_pixel(led_strip, 0, COLOUR(recording_colour));
-      led_strip_set_pixel(led_strip, 1, COLOUR(recording_colour));
-      led_strip_set_pixel(led_strip, 2, COLOUR(recording_colour));
-      led_strip_set_pixel(led_strip, 3, COLOUR(recording_colour));
+    if (status & SHIFTLIGHT_STATUS_HAS_CLIENT) {
+      led_strip_set_pixel(led_strip, 5, COLOUR(client_colour));
     }
   } else if (rpm >= thresholds[RPM_COUNT]) {
     // RPM above upper threshold.
